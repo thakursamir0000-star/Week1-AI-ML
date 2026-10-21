@@ -1,4 +1,4 @@
-# ai-ml-week1
+# Week1-AI-ML
 
 Week 1 work from my AI/ML Engineer internship: an LLM API client with robust
 error handling, and a script that asks an LLM to classify text and validates
@@ -15,20 +15,48 @@ Groq is the provider used for live API testing.
 
 ## Week 1 progress
 
-| Day | Task | Status |
-|-----|------|--------|
-| Mon | Git repository and Python environment | Done |
-| Mon | API client with configuration and error handling | Done for Groq and Anthropic, covered by offline tests |
-| Mon | Live API test call | Done with Groq on 2026-10-21. The Anthropic client has not been run against the live API. |
-| Tue | Script that calls an LLM and parses its JSON response | Done: `groq-classify` / `classify` with schema validation, offline tests, live run via Groq |
-| Wed | Embeddings | Not yet completed |
-| Thu | Semantic search | Not yet completed |
-| Fri | Review | Not yet completed |
+| Day | Focus | Status |
+|-----|-------|--------|
+| Day 1 (Mon) | Environment setup and API integration | Done. The live API test passed with Groq on 2026-10-21. The Anthropic client is covered by offline tests only. |
+| Day 2 (Tue) | JSON parsing, response validation, classification and offline testing | Done |
+| Day 3 (Wed) | Embeddings | Not yet completed |
+| Day 4 (Thu) | Semantic search | Not yet completed |
+| Day 5 (Fri) | Review | Not yet completed |
+
+### Day 1: environment setup and API integration
+
+- Git repository, a Python virtual environment, and dependency version ranges in
+  `requirements.txt`.
+- `python -m src.main check-env` reports the interpreter, package versions and
+  which API keys are configured, without showing their values.
+- Groq client (`src/groq_client.py`): the official `openai` SDK pointed at
+  Groq's OpenAI-compatible endpoint.
+- Anthropic client (`src/api_client.py`): the official `anthropic` SDK.
+- Both clients read keys from environment variables or `.env`. They raise typed
+  errors for missing keys, authentication failures, rate limits, other HTTP
+  errors, network failures and timeouts, and unusable responses.
+- Live API test: `python -m src.main groq-classify "I was charged twice this month."`
+  succeeded on 2026-10-21. One request was sent, it exited with code 0, and the
+  reply passed schema validation (output under [Usage](#usage)). No live request
+  has been made with the Anthropic client.
+
+### Day 2: JSON parsing, response validation and classification
+
+- `src/classifier.py` (Anthropic) and `classify_text_with_groq()` in
+  `src/groq_client.py` ask the model to classify a short text into one of six
+  categories and to reply with JSON.
+- `src/response_parser.py` parses the reply with `json.loads` and validates
+  every field against the [response schema](#response-schema). It raises
+  `EmptyResponseError`, `MalformedJSONError` or `SchemaValidationError`.
+- The CLI commands `groq-classify` (Groq) and `classify` (Anthropic) print the
+  validated JSON.
+- Offline tests cover parsing, validation and both classification workflows
+  using fake HTTP servers. No API key or network is needed (see [Tests](#tests)).
 
 ## Project structure
 
 ```
-ai-ml-week1/
+Week1-AI-ML/
 ├── src/
 │   ├── api_client.py       # Anthropic client: settings, send_message(), extract_text(), errors
 │   ├── groq_client.py      # Groq client (OpenAI SDK): settings, send_groq_chat(), errors, classify_text_with_groq()
@@ -49,8 +77,8 @@ directly. Both providers reuse the same prompt, input limits and validation.
 Requires Python 3.10 or newer. Tested with Python 3.12 on Ubuntu (WSL2).
 
 ```bash
-git clone https://github.com/<your-username>/ai-ml-week1.git
-cd ai-ml-week1
+git clone https://github.com/thakursamir0000-star/Week1-AI-ML.git
+cd Week1-AI-ML
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
