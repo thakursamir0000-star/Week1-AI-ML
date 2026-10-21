@@ -1,0 +1,47 @@
+# --- Secrets: never commit real credentials --------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Virtual environments ---------------------------------------------------
+.venv/
+.venv-linux/
+venv/
+env/
+
+# --- Python build and cache artefacts -------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Test and tool caches ---------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- Jupyter ----------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- Downloaded models and caches (Hugging Face, Sentence Transformers, torch)
+.cache/
+models/
+hf_cache/
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# --- Editors and operating systems ------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*:Zone.Identifier
+*.log

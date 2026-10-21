@@ -1,0 +1,11 @@
+# Runtime
+anthropic>=1.15,<2        # official Claude SDK (1.x line, built on httpx2)
+httpx2>=2.0,<3            # the SDK's HTTP library; imported directly for client typing and test fakes
+python-dotenv>=1.0,<2     # reads .env without touching os.environ
+
+# Optional alternative provider: Groq through its OpenAI-compatible API
+openai>=2.54,<3           # official OpenAI SDK, pointed at https://api.groq.com/openai/v1
+httpx>=0.28,<1            # the openai SDK's HTTP library; imported directly for client typing and test fakes
+
+# Tests
+pytest>=8
