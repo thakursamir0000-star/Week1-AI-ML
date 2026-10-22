@@ -1,0 +1,22 @@
+[
+  {"id": "ml-01", "text": "Supervised learning trains a model on labelled examples, so that it can predict the correct label for new inputs it has not seen before."},
+  {"id": "ml-02", "text": "Overfitting happens when a model memorises its training data and then performs poorly on new data. Regularisation and cross-validation help to prevent it."},
+  {"id": "ml-03", "text": "A neural network is made of layers of connected units. Backpropagation and gradient descent adjust the weights of the connections to reduce the prediction error."},
+  {"id": "ml-04", "text": "Large language models are trained on huge amounts of text to predict the next token, and can then answer questions, write text and summarise documents."},
+  {"id": "py-01", "text": "A Python list comprehension builds a new list from an existing iterable in a single line, for example [x * x for x in range(10)]."},
+  {"id": "py-02", "text": "A Python virtual environment keeps the packages installed for one project separate from other projects, so each project can use its own library versions."},
+  {"id": "py-03", "text": "When an error occurs at runtime, Python raises an exception. A try/except block catches the exception so that the program can recover instead of stopping."},
+  {"id": "db-01", "text": "A relational database stores data in tables made of rows and columns. SQL queries join related tables through primary keys and foreign keys."},
+  {"id": "db-02", "text": "An index on a database column speeds up lookups, much like the index at the back of a book, at the cost of extra storage and slower writes."},
+  {"id": "db-03", "text": "A database transaction groups several changes so that either all of them are saved or none are. The ACID properties keep the data consistent after a failure."},
+  {"id": "cloud-01", "text": "Cloud providers rent out virtual machines and storage on demand, so a company pays only for the computing capacity it actually uses."},
+  {"id": "cloud-02", "text": "Serverless functions run code in response to events, such as an HTTP request or a new file, without the developer managing servers. The platform scales them automatically."},
+  {"id": "cloud-03", "text": "Containers package an application together with its dependencies. Kubernetes schedules and scales containers across a cluster of machines."},
+  {"id": "sec-01", "text": "Phishing emails pretend to come from a trusted sender in order to trick people into revealing their passwords or clicking malicious links."},
+  {"id": "sec-02", "text": "SQL injection attacks insert malicious code into a database query through unvalidated user input. Parameterised queries prevent them."},
+  {"id": "sec-03", "text": "Multi-factor authentication asks for a second proof of identity, such as a one-time code sent to a phone, in addition to the password."},
+  {"id": "sec-04", "text": "Ransomware encrypts the files on a victim's computer and demands a payment for the decryption key. Offline backups limit the damage."},
+  {"id": "fin-01", "text": "Compound interest is earned on both the original deposit and the interest already added, so savings grow faster the longer they are left untouched."},
+  {"id": "fin-02", "text": "Diversification spreads investments across different kinds of assets, so a loss in one holding has a smaller effect on the whole portfolio."},
+  {"id": "fin-03", "text": "Banks use machine learning models to flag unusual card transactions that may be fraudulent and to block them before money is lost."}
+]
