@@ -2,8 +2,9 @@
 
 Week 1 work from my AI/ML Engineer internship: an LLM API client with robust
 error handling, a script that asks an LLM to classify text and validates
-the JSON it returns, and a local sentence-embedding demo that compares texts
-with cosine similarity.
+the JSON it returns, a local sentence-embedding demo that compares texts
+with cosine similarity, and semantic search over 20 documents, evaluated
+against a keyword baseline on labelled queries.
 
 Two providers are implemented behind the same task, prompt and validation:
 
@@ -21,7 +22,7 @@ Groq is the provider used for live API testing.
 | Day 1 (Mon) | Environment setup and API integration | Done. The live API test passed with Groq on 2026-10-21. The Anthropic client is covered by offline tests only. |
 | Day 2 (Tue) | JSON parsing, response validation, classification and offline testing | Done |
 | Day 3 (Wed) | Embeddings | Done. Five example texts compared with a local embedding model, and all tests pass (2026-10-22). This is a demonstration, not an evaluation: see [the similarity experiment](#similarity-experiment-day-3). |
-| Day 4 (Thu) | Semantic search | Not yet completed |
+| Day 4 (Thu) | Semantic search | Done. Search over 20 documents, evaluated on 23 labelled queries against a keyword baseline, and all tests pass (2026-10-22). The set is small and easy, so the scores are not a general accuracy figure: see [the search evaluation](#search-evaluation-day-4). |
 | Day 5 (Fri) | Review | Not yet completed |
 
 ### Day 1: environment setup and API integration
@@ -74,6 +75,43 @@ Groq is the provider used for live API testing.
   [the similarity experiment](#similarity-experiment-day-3). The existing API
   clients, classifier, CLI and response parser are unchanged.
 
+### Day 4: semantic search and top-3 evaluation
+
+- **Dataset.** `data/documents.json` holds 20 short documents on six
+  subjects, each with a stable ID such as `db-02`. `data/queries.json` holds
+  23 search queries, each listing the IDs of the documents relevant to it
+  (27 labels in all). Both are plain JSON, one entry per line (see
+  [Dataset](#dataset)).
+- **Semantic search.** `SemanticSearcher` in `src/semantic_search.py`
+  embeds the 20 documents once with Day 3's `embed_texts()` and keeps the
+  vectors. Each query is then embedded on its own and compared with every
+  document using Day 3's `cosine_similarity()`. The top 3 come back with
+  their rank, ID, text and score. No embedding or similarity code is
+  duplicated, and there is no framework or vector database.
+- **Keyword baseline.** `KeywordSearcher` ranks documents by the rare words
+  they share with the query (IDF-weighted word overlap, no model). Both
+  methods are scored on the same queries and labels.
+- **Evaluation.** `evaluate()` reports, for every query, its relevant IDs,
+  its retrieved IDs, whether it is a hit and its recall. It also reports two
+  averages, defined under [Metrics](#metrics): the **top-3 hit rate** and
+  **Recall@3**.
+- **Validation.** It rejects:
+  - empty or non-string queries;
+  - a `top_k` that is not a whole number of at least 1 (0, -1, 2.5, `True`);
+  - duplicate document or query IDs, and blank IDs or texts;
+  - JSON entries with missing or extra fields, or a repeated key;
+  - queries without relevant IDs, and relevant IDs that are not in the
+    collection.
+- **Ties** are broken by document ID, so results do not depend on the order
+  of the documents in the file.
+- **CLI.** `python -m src.semantic_search search "..."` and
+  `python -m src.semantic_search evaluate` (see [Usage](#semantic-search-day-4)).
+- **Tests.** `tests/test_semantic_search.py` adds 182 tests. 179 use fake
+  encoders or fixed vectors and never load PyTorch. 3 load the real model
+  from the local cache and check that the pipeline works, not how accurate
+  it is.
+- The Day 1-3 code is unchanged; Day 4 only adds files.
+
 ## Project structure
 
 ```
@@ -84,8 +122,12 @@ Week1-AI-ML/
 │   ├── classifier.py       # shared classification prompt + Anthropic classify_text() workflow
 │   ├── response_parser.py  # JSON parsing and schema validation (pure Python, no network)
 │   ├── embeddings.py       # Day 3: cosine-similarity maths (NumPy only), local embedding model, demo CLI
+│   ├── semantic_search.py  # Day 4: dataset loading, semantic + keyword search, hit rate / Recall@k, CLI
 │   └── main.py             # CLI: check-env, ping, classify, groq-classify
-├── tests/                  # 270 offline tests (no keys, no network; 3 load the cached embedding model)
+├── data/
+│   ├── documents.json      # Day 4: the 20 documents (id, text)
+│   └── queries.json        # Day 4: the 23 labelled queries (id, text, relevant_ids)
+├── tests/                  # 452 offline tests (no keys, no network; 6 load the cached embedding model)
 ├── .env.example            # configuration template (placeholders only)
 ├── requirements.txt
 └── pytest.ini              # also registers the `model` test marker
@@ -93,7 +135,9 @@ Week1-AI-ML/
 
 `response_parser.py` holds no network code, so its rules are tested
 directly. Both providers reuse the same prompt, input limits and validation.
-In the same way, the similarity functions in `embeddings.py` need only NumPy.
+In the same way, the similarity functions in `embeddings.py` need only NumPy,
+and the ranking, metrics and keyword baseline in `semantic_search.py` need
+no model.
 
 ## Setup
 
@@ -117,12 +161,13 @@ Install PyTorch from the CPU-only index **before** `requirements.txt`.
 Otherwise `sentence-transformers` pulls PyTorch from PyPI, including several GB
 of CUDA packages.
 
-**Embedding model download.** The first run of `python -m src.embeddings`
-downloads `all-MiniLM-L6-v2` (about 90 MB) from the Hugging Face Hub into
+**Embedding model download.** The first run of `python -m src.embeddings`,
+or of `python -m src.semantic_search` with semantic search, downloads
+`all-MiniLM-L6-v2` (about 90 MB) from the Hugging Face Hub into
 `~/.cache/huggingface`. Set `HF_HOME` to use another folder. After that, it
 loads from the cache and makes no network requests. `--offline` enforces this.
 No API key or Hugging Face account is needed, and the tests never download the
-model.
+model. Both commands share the same cached model.
 
 ## Configuration
 
@@ -236,6 +281,67 @@ problem. That covers an empty or blank text, a single string instead of a
 list, vectors of different lengths, a zero vector, NaN or infinity, and
 non-numeric values.
 
+### Semantic search (Day 4)
+
+```bash
+python -m src.semantic_search search "How do I keep two Python projects from needing different library versions?"
+python -m src.semantic_search search --method keyword "python virtual environment"   # keyword baseline, no model
+python -m src.semantic_search search --top-k 5 "database speed"                      # 5 results instead of 3
+python -m src.semantic_search evaluate             # both methods on the 23 labelled queries
+python -m src.semantic_search evaluate --offline   # local cache only: fail instead of downloading
+```
+
+The first semantic run downloads the model if it is not cached yet (see
+[Setup](#setup)). `--method keyword` never loads it. Real output from
+2026-10-22 (WSL2 Ubuntu, CPU, about 12 seconds including the PyTorch import):
+
+```
+Loading sentence-transformers/all-MiniLM-L6-v2 ...
+Query: How do I keep two Python projects from needing different library versions?
+Semantic search (sentence-transformers/all-MiniLM-L6-v2, cosine similarity): top 3 of 20 documents
+
+  Rank  ID         Score  Text
+  1     py-02      0.696  A Python virtual environment keeps the packages installed for one project separate from other projects, so each project can use its own library versions.
+  2     py-03      0.229  When an error occurs at runtime, Python raises an exception. A try/except block catches the exception so that the program can recover instead of stopping.
+  3     cloud-03   0.188  Containers package an application together with its dependencies. Kubernetes schedules and scales containers across a cluster of machines.
+```
+
+The scores are cosine similarities. They only mean something compared with
+each other, and they are not probabilities. The keyword baseline only lists
+documents that share at least one informative word with the query, so it can
+return fewer than 3 results, or none:
+
+```
+Query: Make sure a money transfer is never half-applied if the system fails midway
+Keyword baseline (IDF-weighted word overlap): top 3 of 20 documents
+
+  Rank  ID       Score  Text
+  1     fin-03   2.996  Banks use machine learning models to flag unusual card transactions that may be fraudulent and to block them before money is lost.
+
+  Only 1 document(s) share a keyword with the query.
+```
+
+`evaluate` prints two lines per query and method (outcome, recall, relevant
+IDs, retrieved IDs, then the query text). It ends with this summary (the full
+run is described in [the search evaluation](#search-evaluation-day-4)):
+
+```
+Summary (23 queries)
+  Method    Top-3 hit rate     Recall@3
+  semantic  100.0% (23/23)     1.000
+  keyword   87.0% (20/23)      0.819
+
+Top-3 hit rate: the share of queries with at least one relevant document in the top 3.
+Recall@3: for each query, (relevant documents in the top 3) / (all of its relevant documents),
+  averaged over the queries. The two are equal for a query with exactly one relevant document.
+```
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | Success |
+| 1 | The model could not be loaded, or `data/documents.json` / `data/queries.json` is missing or invalid (the message names the file and the problem) |
+| 2 | Invalid arguments (e.g. `--top-k 0`) or an empty query |
+
 ### From Python
 
 ```python
@@ -252,6 +358,15 @@ cosine_similarity([1, 0], [1, 1])               # 0.7071... (pure maths, no mode
 report = compare_texts(load_model(), ["The app crashes.", "The program keeps closing."])
 report.similarities                             # 2 x 2 NumPy array
 report.pairs[0]                                 # SimilarPair(first=0, second=1, score=...)
+
+from src.semantic_search import KeywordSearcher, SemanticSearcher, evaluate, load_documents, load_queries
+
+documents = load_documents()                    # data/documents.json, validated
+searcher = SemanticSearcher(load_model(), documents)   # embeds the 20 documents once
+searcher.search("Speed up lookups in a big table")     # [SearchResult(rank=1, id=..., text=..., score=...), ...]
+report = evaluate(searcher, load_queries(documents))
+report.hit_rate, report.mean_recall             # top-3 hit rate and Recall@3, each from 0 to 1
+evaluate(KeywordSearcher(documents), load_queries(documents)).hit_rate   # the baseline, no model
 ```
 
 ## Similarity experiment (Day 3)
@@ -311,6 +426,160 @@ versions or hardware.
     longer input. `embeddings.py` does not check for this.
   - The model is trained mainly on English.
 
+## Search evaluation (Day 4)
+
+**Question.** On a small, labelled collection, does semantic search put a
+relevant document in the top 3 more often than a simple keyword search?
+
+### Dataset
+
+`data/documents.json` holds 20 documents, written for this task. Each is
+one or two sentences:
+
+| Subject | IDs | Documents |
+|---------|-----|-----------|
+| AI and machine learning | `ml-01` to `ml-04` | 4: supervised learning, overfitting, neural networks, large language models |
+| Python programming | `py-01` to `py-03` | 3: list comprehensions, virtual environments, exceptions |
+| Databases | `db-01` to `db-03` | 3: relational tables and SQL, indexes, transactions |
+| Cloud computing | `cloud-01` to `cloud-03` | 3: on-demand virtual machines, serverless functions, containers and Kubernetes |
+| Cybersecurity | `sec-01` to `sec-04` | 4: phishing, SQL injection, multi-factor authentication, ransomware |
+| Finance | `fin-01` to `fin-03` | 3: compound interest, diversification, card-fraud detection |
+
+Two documents deliberately cross subjects: `sec-02` (SQL injection:
+security and databases) and `fin-03` (fraud detection with machine learning).
+
+`data/queries.json` holds 23 queries:
+- **Labels.** They were written after the documents and labelled from the
+  document texts before any search was run. No label was changed after
+  seeing results.
+- **One relevant document.** 20 queries have exactly one, and each document
+  is the answer to exactly one of them.
+- **Several.** 3 queries have more: `q21` "common types of cyber attack"
+  (`sec-01`, `sec-02`, `sec-04`), `q22` cloud services that scale
+  automatically (`cloud-02`, `cloud-03`), and `q23` saving and investing
+  (`fin-01`, `fin-02`).
+- **Mostly paraphrases.** Most queries share few words with their answer,
+  for example `q19` "Don't put all your eggs in one basket when investing"
+  for diversification. A few share key words, for example `q02` "neural
+  network" and `q15` "database queries built from user input".
+
+To add a document or query, add one line to the JSON file. Loading checks
+every entry.
+
+### Metrics
+
+For each query q, R(q) is its set of relevant documents and T(q) the top 3
+retrieved documents. Q is the set of 23 queries.
+
+- **Top-3 hit rate** = (number of queries with at least one relevant
+  document in T(q)) / |Q|. A query counts once, however many relevant
+  documents it finds.
+- **Recall@3** = the mean over all queries of |R(q) ∩ T(q)| / |R(q)|, the
+  share of each query's relevant documents found in its top 3.
+- **How they differ.** For a query with one relevant document, the two
+  values are the same (0 or 1). They differ only on `q21` to `q23`: finding
+  1 of 3 relevant documents is a full hit but a recall of 1/3. A query with
+  more than 3 relevant documents could never reach a recall of 1 (none
+  here).
+- Neither metric is called "accuracy".
+
+**Keyword baseline.**
+- Words are lower-cased, with common English stop words and one-letter words
+  dropped, and a final plural "s" removed.
+- A document's score is the sum of idf(w) = ln(N / df(w)) over the distinct
+  words w it shares with the query. N = 20 is the number of documents and
+  df(w) the number that contain w.
+- Only documents with a score above 0 are returned, so a query with no shared
+  word gets no results instead of three arbitrary ones.
+- The stop-word list and rules were fixed before the evaluation was run, and
+  were not tuned on the queries.
+
+**Ties.** Equal scores are ordered by document ID in both methods. This is
+deterministic, but arbitrary. It decided one keyword result (`q16`, below).
+
+### Results
+
+Measured on 2026-10-22 with `python -m src.semantic_search evaluate --offline`.
+The run took about 15 seconds on WSL2 Ubuntu (CPU), with the same library
+versions as [Day 3](#similarity-experiment-day-3).
+
+| Method | Top-3 hit rate | Recall@3 |
+|--------|----------------|----------|
+| Semantic search (all-MiniLM-L6-v2, cosine similarity) | **100.0%** (23 of 23) | **1.000** |
+| Keyword baseline (IDF-weighted word overlap) | 87.0% (20 of 23) | 0.819 |
+
+The same run with `--top-k 1` (only the first result counts) separates the
+methods more, because the top 3 leaves little room for error:
+
+| Method | Top-1 hit rate | Recall@1 |
+|--------|----------------|----------|
+| Semantic search | 95.7% (22 of 23) | 0.884 |
+| Keyword baseline | 78.3% (18 of 23) | 0.710 |
+
+**Per-query observations** (the full per-query output is printed by `evaluate`):
+- **Keyword misses.**
+  - `q10` (money transfer): the query shares no word with `db-03`
+    (transactions). Its one shared word, "money", retrieves `fin-03`.
+  - `q16` ("keep my account safe ... password"): a four-way tie at 2.303
+    between `db-03`, `py-02`, `sec-01` and `sec-03`, each sharing one word
+    ("keep" or "password"). ID order put `sec-03`, the relevant document,
+    fourth. So the tie-breaking rule decided this miss.
+  - `q19` ("eggs in one basket"): no shared word, no results.
+- **Keyword partial recall.** For `q21`, only `sec-02` contains the word
+  "attack" (1 of 3). For `q23`, it found `fin-01` but not `fin-02` (1 of 2).
+- **Semantic near-misses.**
+  - `q10`: `db-03` was third (0.201), behind `fin-03` (0.276) and `py-03`
+    (0.217). It is semantic search's only top-1 miss.
+  - `q22`: `cloud-02` was third, behind `cloud-03` and `cloud-01`.
+  - The top-3 scores are close together, so a slightly different query could
+    turn these hits into misses.
+
+### What this does and does not show
+
+- **The pipeline works.** Semantic search ran end to end on every labelled
+  query: documents embedded once, queries embedded, cosine similarity,
+  ranking, metrics. It found a relevant document in the top 3 for every
+  query, and in first place for 22 of 23.
+- **100% is a ceiling effect, not a general accuracy figure.** The
+  collection is small (20 documents), its six subjects are far apart, and
+  the documents are short and clean. An easy set like this cannot tell a
+  good model from a better one.
+- **The sample is too small to call the gap significant.**
+  - Each query is worth 4.3 percentage points.
+  - 95% Wilson intervals: semantic 85.7-100%, keyword 67.9-95.5%. They
+    overlap.
+  - Semantic search won all 3 queries on which the methods disagreed at
+    top 3 (4 at top 1), and the keyword baseline won none. An exact McNemar
+    test on those pairs gives p = 0.25 (top 3) and p = 0.125 (top 1), which
+    is not significant.
+- **The queries may favour semantic search.** One author wrote the
+  documents, the queries and the labels, knowing that semantic search would
+  be compared with keyword search. Most queries are paraphrases, which is
+  where keyword overlap is weakest.
+- **The labels are one person's binary judgements.** There is no graded
+  relevance and no second annotator. Some calls are debatable: for
+  example, `cloud-01` (on-demand virtual machines) is not labelled relevant
+  to `q22` (automatic scaling).
+- **The keyword baseline is deliberately simple.** It has no stemming beyond
+  a plural "s" ("pretending" does not match "pretend"), no synonyms and no
+  length normalisation. A stronger lexical baseline such as BM25 may score
+  differently.
+- **Known limits.**
+  - The model reads at most 256 word pieces per text and truncates longer
+    input.
+  - It is trained mainly on English.
+  - Search compares the query with every document, which is right for 20
+    documents. Thousands would need a single matrix product or a vector
+    index.
+- **A rigorous evaluation would need:**
+  - an independent, public retrieval benchmark (for example, a BEIR
+    dataset) with labels written by other people;
+  - hundreds of queries, including hard negatives and near-duplicate
+    documents;
+  - several annotators and graded relevance, scored with MRR or nDCG as well;
+  - BM25 and other embedding models as baselines;
+  - significance tests on the paired results.
+
 ## Response schema
 
 Both providers return the same dictionary. No other fields are allowed.
@@ -365,19 +634,26 @@ The base classes are `GroqClientError`, `ClaudeClientError` and
 ## Tests
 
 ```bash
-python -m pytest -q                  # all 270 tests, about 10 seconds (3 load the cached embedding model)
-python -m pytest -q -m "not model"   # 267 tests, about 2-3 seconds, never imports PyTorch
+python -m pytest -q                  # all 452 tests, about 10-20 seconds (6 load the cached embedding model)
+python -m pytest -q -m "not model"   # 446 tests, about 3 seconds, never imports PyTorch in the test process
 ```
 
-Results recorded on 2026-10-22 (WSL2 Ubuntu, Python 3.12.15, pytest 9.1.1):
+Results recorded on 2026-10-22 after Day 4 (WSL2 Ubuntu, Python 3.12.15, pytest 9.1.1):
 
 | Command | Result |
 |---------|--------|
-| `python -m pytest -q` | 270 passed in 7.97 s |
-| `python -m pytest -q -m "not model"` | 267 passed, 3 deselected in 2.80 s |
-| `python -m pytest -q --ignore=tests/test_embeddings.py` (the Day 1-2 suite) | 162 passed in 2.43 s, unchanged from before Day 3 |
-| `python -m pytest -q tests/test_embeddings.py` | 108 passed in 7.02 s |
-| `HF_HOME=<empty folder> python -m pytest -q -m model` (model not cached) | 3 skipped, 267 deselected; nothing was downloaded |
+| `python -m pytest -q` | 452 passed in 16.82 s |
+| `python -m pytest -q -m "not model"` | 446 passed, 6 deselected in 2.96 s |
+| `python -m pytest -q --ignore=tests/test_embeddings.py --ignore=tests/test_semantic_search.py` (the Day 1-2 suite) | 162 passed in 1.37 s, unchanged |
+| `python -m pytest -q tests/test_embeddings.py` (Day 3) | 108 passed in 7.66 s, unchanged |
+| `python -m pytest -q tests/test_semantic_search.py` (Day 4) | 182 passed in 8.59 s |
+| `HF_HOME=<empty folder> python -m pytest -q -m model` (model not cached) | 6 skipped, 446 deselected; nothing was downloaded |
+
+Before Day 4, the suite was 270 tests, and all of them still pass.
+
+Passing tests show that the code behaves as specified. They do not show that
+the model is accurate. The measured retrieval quality is under
+[the search evaluation](#search-evaluation-day-4).
 
 The tests need **no API key and no network**:
 - `conftest.py` hides real environment variables and `.env`, and blocks
@@ -389,9 +665,12 @@ The tests need **no API key and no network**:
 - The embedding tests use small fake encoders and a stand-in
   `sentence_transformers` package, so they never load PyTorch or a model.
   The cosine-similarity maths is checked against hand-computed values.
-- The 3 tests marked `model` load the real `all-MiniLM-L6-v2` with
-  `local_files_only=True` while sockets are blocked. If the model is not
-  cached, they are skipped. They never download it.
+- The semantic-search tests use fake encoders that return fixed vectors, so
+  every expected ranking and score can be worked out by hand. The metric
+  tests use hand-calculated examples.
+- The 6 tests marked `model` (3 for Day 3, 3 for Day 4) load the real
+  `all-MiniLM-L6-v2` with `local_files_only=True` while sockets are blocked.
+  If the model is not cached, they are skipped. They never download it.
 
 | Test file | Covers |
 |-----------|--------|
@@ -401,6 +680,7 @@ The tests need **no API key and no network**:
 | `test_response_parser.py` | JSON parsing (valid, fenced, empty, malformed, NaN) and schema validation (missing/extra fields, wrong types and ranges) |
 | `test_main.py` | CLI output and exit codes, and that keys never appear in output |
 | `test_embeddings.py` | cosine similarity: known values, symmetry, scale invariance, clipping to [-1, 1], extreme magnitudes (1e-200 to 1e200), invalid vectors; the similarity matrix, including extreme magnitudes; pair ranking, ties and `top_k`; `top_k` validation (0, -1, 2.5, booleans) in `rank_pairs()` and `format_report()`; embedding shape for 1 to 768 dimensions; invalid texts and unusable model output; loading from the cache first and downloading only when allowed; CLI output and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, and the expected ranking of the five example texts |
+| `test_semantic_search.py` | the dataset (20 documents, unique IDs, six subjects; every label points at a real document); malformed documents and JSON entries, duplicate document and query IDs, repeated JSON keys; ranking order, top 3 and `top_k` larger than the collection; invalid queries and `top_k` (0, -1, 2.5, booleans, strings, `None`) rejected before the model is called; ties broken by ID whatever the document order; document embeddings computed once, reused and read-only; Day 3 numerical behaviour (1e-200 to 1e200, clipping to [-1, 1], zero vectors); keyword tokenising, IDF scores and ties; top-3 hit rate and Recall@3 against hand-calculated examples; empty and invalid labels; CLI output, `--method keyword`, `--offline`, `--top-k` and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, 3 results best first, and every labelled query evaluated |
 
 ## Design notes
 
@@ -441,6 +721,21 @@ The tests need **no API key and no network**:
     tests can pass fakes.
   - `embeddings.py` does not import the API clients and needs no key. Its
     only network access is the one-time model download.
+- **Semantic search.**
+  - `semantic_search.py` imports the Day 3 functions (`embed_texts`,
+    `cosine_similarity`, `load_model`) and its input checks, so the two
+    modules accept and reject the same values.
+  - A `SemanticSearcher` embeds its documents once, in one batch, and keeps
+    the vectors read-only. It holds its own copy of the collection, so the
+    cached vectors always match it. Searching other documents means creating
+    a new searcher.
+  - Ranking, metrics and the keyword baseline take plain lists and need no
+    model.
+  - The keyword baseline sums its idf weights with `math.fsum`. That sum is
+    exactly rounded, so ties are exact and do not depend on Python's
+    hash-seeded set order.
+  - The dataset is JSON rather than Python code. It is data, and it can be
+    edited and checked without touching the code.
 
 ## Troubleshooting
 
@@ -457,4 +752,5 @@ The tests need **no API key and no network**:
 | `Error: could not load sentence-transformers/all-MiniLM-L6-v2` | The model is not cached (or `--offline` was used) and could not be downloaded. Connect once and run `python -m src.embeddings`. |
 | `OSError: [WinError 4551]` when importing torch | Windows Smart App Control blocks PyTorch's DLLs under Windows Python. Run under WSL2 Ubuntu. |
 | `pip install` starts downloading `nvidia-*` packages | PyTorch is coming from PyPI with CUDA. Stop it and install the CPU build first (see [Setup](#setup)). |
-| `3 skipped` for tests marked `model` | The embedding model is not in the local cache. Run `python -m src.embeddings` once. |
+| `6 skipped` for tests marked `model` | The embedding model is not in the local cache. Run `python -m src.embeddings` once. |
+| `Error: could not load .../data/documents.json: ...` | The dataset file is missing or invalid. The message names the entry and the problem, for example a duplicate ID or a missing field. |
