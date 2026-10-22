@@ -7,5 +7,12 @@ python-dotenv>=1.0,<2     # reads .env without touching os.environ
 openai>=2.54,<3           # official OpenAI SDK, pointed at https://api.groq.com/openai/v1
 httpx>=0.28,<1            # the openai SDK's HTTP library; imported directly for client typing and test fakes
 
+# Day 3: local sentence embeddings (no API key). Install the CPU-only PyTorch
+# build FIRST, or pip may pull the multi-GB CUDA build in as a dependency:
+#   pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.2,<3"
+# The model itself (all-MiniLM-L6-v2, about 90 MB) downloads on first use.
+sentence-transformers>=6.1,<7   # runs the embedding model locally on the CPU
+numpy>=1.24,<3                  # imported directly for the cosine-similarity maths
+
 # Tests
 pytest>=8
