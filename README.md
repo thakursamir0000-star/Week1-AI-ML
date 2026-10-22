@@ -92,9 +92,10 @@ Groq is the provider used for live API testing.
   they share with the query (IDF-weighted word overlap, no model). Both
   methods are scored on the same queries and labels.
 - **Evaluation.** `evaluate()` reports, for every query, its relevant IDs,
-  its retrieved IDs, whether it is a hit and its recall. It also reports two
-  averages, defined under [Metrics](#metrics): the **top-3 hit rate** and
-  **Recall@3**.
+  its retrieved IDs, whether it is a hit, its recall and precision, and the
+  rank of its first relevant document. It also reports four averages,
+  defined under [Metrics](#metrics): the **top-3 hit rate**, **Recall@3**,
+  **Precision@3** and **MRR@3**.
 - **Validation.** It rejects:
   - empty or non-string queries;
   - a `top_k` that is not a whole number of at least 1 (0, -1, 2.5, `True`);
@@ -106,10 +107,12 @@ Groq is the provider used for live API testing.
   of the documents in the file.
 - **CLI.** `python -m src.semantic_search search "..."` and
   `python -m src.semantic_search evaluate` (see [Usage](#semantic-search-day-4)).
-- **Tests.** `tests/test_semantic_search.py` adds 182 tests. 179 use fake
-  encoders or fixed vectors and never load PyTorch. 3 load the real model
-  from the local cache and check that the pipeline works, not how accurate
-  it is.
+- **Tests.** `tests/test_semantic_search.py` adds 193 tests. 189 use fake
+  encoders or fixed vectors and never load PyTorch. 4 load the real model
+  from the local cache: 3 check that the pipeline works, and 1 is a
+  regression test that fails if the measured results under
+  [Results](#results) change (a lost hit, or a relevant document moved
+  down).
 - The Day 1-3 code is unchanged; Day 4 only adds files.
 
 ## Project structure
@@ -122,12 +125,12 @@ Week1-AI-ML/
 │   ├── classifier.py       # shared classification prompt + Anthropic classify_text() workflow
 │   ├── response_parser.py  # JSON parsing and schema validation (pure Python, no network)
 │   ├── embeddings.py       # Day 3: cosine-similarity maths (NumPy only), local embedding model, demo CLI
-│   ├── semantic_search.py  # Day 4: dataset loading, semantic + keyword search, hit rate / Recall@k, CLI
+│   ├── semantic_search.py  # Day 4: dataset loading, semantic + keyword search, hit rate / Recall@k / Precision@k / MRR@k, CLI
 │   └── main.py             # CLI: check-env, ping, classify, groq-classify
 ├── data/
 │   ├── documents.json      # Day 4: the 20 documents (id, text)
 │   └── queries.json        # Day 4: the 23 labelled queries (id, text, relevant_ids)
-├── tests/                  # 452 offline tests (no keys, no network; 6 load the cached embedding model)
+├── tests/                  # 463 offline tests (no keys, no network; 7 load the cached embedding model)
 ├── .env.example            # configuration template (placeholders only)
 ├── requirements.txt
 └── pytest.ini              # also registers the `model` test marker
@@ -321,19 +324,31 @@ Keyword baseline (IDF-weighted word overlap): top 3 of 20 documents
   Only 1 document(s) share a keyword with the query.
 ```
 
-`evaluate` prints two lines per query and method (outcome, recall, relevant
-IDs, retrieved IDs, then the query text). It ends with this summary (the full
-run is described in [the search evaluation](#search-evaluation-day-4)):
+`evaluate` prints two lines per query and method (outcome, recall,
+precision, the rank of the first relevant document, relevant IDs, retrieved
+IDs, then the query text), for example:
+
+```
+  q10  hit   recall@3 1/1  precision@3 1/3  first relevant: 3  relevant: db-03                   retrieved: fin-03, py-03, db-03
+       Make sure a money transfer is never half-applied if the system fails midway
+```
+
+It ends with this summary. Real output from 2026-10-23 (the full run is
+described in [the search evaluation](#search-evaluation-day-4)):
 
 ```
 Summary (23 queries)
-  Method    Top-3 hit rate     Recall@3
-  semantic  100.0% (23/23)     1.000
-  keyword   87.0% (20/23)      0.819
+  Method    Top-3 hit rate     Recall@3  Precision@3  MRR@3
+  semantic  100.0% (23/23)     1.000     0.391        0.971
+  keyword   87.0% (20/23)      0.819     0.304        0.819
 
 Top-3 hit rate: the share of queries with at least one relevant document in the top 3.
 Recall@3: for each query, (relevant documents in the top 3) / (all of its relevant documents),
   averaged over the queries. The two are equal for a query with exactly one relevant document.
+Precision@3: for each query, (relevant documents in the top 3) / 3, averaged over the queries.
+  A query with fewer than 3 relevant documents cannot reach 1; an empty slot counts as a miss.
+MRR@3: for each query, 1 / (rank of the first relevant document in the top 3), or 0 if there is none,
+  averaged over the queries.
 ```
 
 | Exit code | Meaning |
@@ -366,6 +381,7 @@ searcher = SemanticSearcher(load_model(), documents)   # embeds the 20 documents
 searcher.search("Speed up lookups in a big table")     # [SearchResult(rank=1, id=..., text=..., score=...), ...]
 report = evaluate(searcher, load_queries(documents))
 report.hit_rate, report.mean_recall             # top-3 hit rate and Recall@3, each from 0 to 1
+report.mean_precision, report.mrr               # Precision@3 (at most report.max_mean_precision) and MRR@3
 evaluate(KeywordSearcher(documents), load_queries(documents)).hit_rate   # the baseline, no model
 ```
 
@@ -458,10 +474,14 @@ security and databases) and `fin-03` (fraud detection with machine learning).
   (`sec-01`, `sec-02`, `sec-04`), `q22` cloud services that scale
   automatically (`cloud-02`, `cloud-03`), and `q23` saving and investing
   (`fin-01`, `fin-02`).
-- **Mostly paraphrases.** Most queries share few words with their answer,
-  for example `q19` "Don't put all your eggs in one basket when investing"
-  for diversification. A few share key words, for example `q02` "neural
-  network" and `q15` "database queries built from user input".
+- **Word overlap varies, and is often high.** After the keyword baseline's
+  tokenising (see below), 15 of the 23 queries share at least two words with
+  a relevant document. `q02`, `q06`, `q15` and `q18` share four, and `q18`
+  nearly restates `fin-01` ("grow faster the longer"). Only `q10` and `q19`
+  share no word with any relevant document, for example `q19` "Don't put
+  all your eggs in one basket when investing" for diversification. This
+  overlap is why the keyword baseline finds a relevant document for 20 of
+  the 23 queries (see [Results](#results)).
 
 To add a document or query, add one line to the JSON file. Loading checks
 every entry.
@@ -481,7 +501,17 @@ retrieved documents. Q is the set of 23 queries.
   1 of 3 relevant documents is a full hit but a recall of 1/3. A query with
   more than 3 relevant documents could never reach a recall of 1 (none
   here).
-- Neither metric is called "accuracy".
+- **Precision@3** = the mean over all queries of |R(q) ∩ T(q)| / 3, the
+  share of each top 3 that is relevant. An empty slot (the keyword baseline
+  can return fewer than 3 documents) counts as a miss. A query with one
+  relevant document scores at most 1/3, so with these labels the best
+  possible value is 27 / 69 = 0.391, not 1. It shows how much of each top 3
+  is noise, which the hit rate and recall ignore.
+- **MRR@3** (mean reciprocal rank) = the mean over all queries of
+  1 / (rank of the first relevant document in T(q)), or 0 if there is none.
+  A relevant document in first place scores 1, in third place 1/3, so unlike
+  the hit rate it rewards ranking the answer higher.
+- None of the metrics is called "accuracy".
 
 **Keyword baseline.**
 - Words are lower-cased, with common English stop words and one-letter words
@@ -501,15 +531,28 @@ deterministic, but arbitrary. It decided one keyword result (`q16`, below).
 
 Measured on 2026-10-22 with `python -m src.semantic_search evaluate --offline`.
 The run took about 15 seconds on WSL2 Ubuntu (CPU), with the same library
-versions as [Day 3](#similarity-experiment-day-3).
+versions as [Day 3](#similarity-experiment-day-3). Precision@3 and MRR@3
+were added on 2026-10-23 and measured by re-running the same command; the
+hit rates and recall did not change. No relevance label was changed.
 
-| Method | Top-3 hit rate | Recall@3 |
-|--------|----------------|----------|
-| Semantic search (all-MiniLM-L6-v2, cosine similarity) | **100.0%** (23 of 23) | **1.000** |
-| Keyword baseline (IDF-weighted word overlap) | 87.0% (20 of 23) | 0.819 |
+| Method | Top-3 hit rate | Recall@3 | Precision@3 | MRR@3 |
+|--------|----------------|----------|-------------|-------|
+| Semantic search (all-MiniLM-L6-v2, cosine similarity) | **100.0%** (23 of 23) | **1.000** | **0.391** | **0.971** |
+| Keyword baseline (IDF-weighted word overlap) | 87.0% (20 of 23) | 0.819 | 0.304 | 0.819 |
+
+- **Precision@3 of 0.391 is the best these labels allow** (see
+  [Metrics](#metrics)): every one of the 27 labelled documents is in its
+  query's top 3. The other 42 of the 69 top-3 slots hold unlabelled
+  documents, which count as misses. A manual check on 2026-10-23 (one
+  reviewer, labels unchanged) judged 37 of those 42 unrelated to their
+  query, 3 partly relevant and 2 uncertain. For example, `fin-03` (card
+  fraud) is ranked first for `q10` (money transfers).
+- **MRR@3 is below 1 only because of `q10`**, whose relevant document is
+  third: (22 + 1/3) / 23 = 0.971.
 
 The same run with `--top-k 1` (only the first result counts) separates the
-methods more, because the top 3 leaves little room for error:
+methods more, because the top 3 leaves little room for error. At top 1,
+Precision@1 and MRR@1 equal the top-1 hit rate:
 
 | Method | Top-1 hit rate | Recall@1 |
 |--------|----------------|----------|
@@ -554,8 +597,10 @@ methods more, because the top 3 leaves little room for error:
     is not significant.
 - **The queries may favour semantic search.** One author wrote the
   documents, the queries and the labels, knowing that semantic search would
-  be compared with keyword search. Most queries are paraphrases, which is
-  where keyword overlap is weakest.
+  be compared with keyword search. Some queries are paraphrases with no
+  shared word (`q10`, `q19`), which is where keyword overlap is weakest. But
+  most share two or more words with their answer, so the set is not a hard
+  test of either method.
 - **The labels are one person's binary judgements.** There is no graded
   relevance and no second annotator. Some calls are debatable: for
   example, `cloud-01` (on-demand virtual machines) is not labelled relevant
@@ -576,7 +621,7 @@ methods more, because the top 3 leaves little room for error:
     dataset) with labels written by other people;
   - hundreds of queries, including hard negatives and near-duplicate
     documents;
-  - several annotators and graded relevance, scored with MRR or nDCG as well;
+  - several annotators and graded relevance, scored with nDCG as well;
   - BM25 and other embedding models as baselines;
   - significance tests on the paired results.
 
@@ -634,20 +679,24 @@ The base classes are `GroqClientError`, `ClaudeClientError` and
 ## Tests
 
 ```bash
-python -m pytest -q                  # all 452 tests, about 10-20 seconds (6 load the cached embedding model)
-python -m pytest -q -m "not model"   # 446 tests, about 3 seconds, never imports PyTorch in the test process
+python -m pytest -q                  # all 463 tests, about 10-20 seconds (7 load the cached embedding model)
+python -m pytest -q -m "not model"   # 456 tests, about 3 seconds, never imports PyTorch in the test process
 ```
 
-Results recorded on 2026-10-22 after Day 4 (WSL2 Ubuntu, Python 3.12.15, pytest 9.1.1):
+Results recorded on 2026-10-23, after Precision@3, MRR@3 and the
+real-model regression test were added (WSL2 Ubuntu, Python 3.12.15,
+pytest 9.1.1). This run used a virtual environment on the Windows drive
+(`/mnt/d`), where importing PyTorch is much slower, so the times are longer
+than on 2026-10-22 (16.82 s for the full suite then):
 
 | Command | Result |
 |---------|--------|
-| `python -m pytest -q` | 452 passed in 16.82 s |
-| `python -m pytest -q -m "not model"` | 446 passed, 6 deselected in 2.96 s |
-| `python -m pytest -q --ignore=tests/test_embeddings.py --ignore=tests/test_semantic_search.py` (the Day 1-2 suite) | 162 passed in 1.37 s, unchanged |
-| `python -m pytest -q tests/test_embeddings.py` (Day 3) | 108 passed in 7.66 s, unchanged |
-| `python -m pytest -q tests/test_semantic_search.py` (Day 4) | 182 passed in 8.59 s |
-| `HF_HOME=<empty folder> python -m pytest -q -m model` (model not cached) | 6 skipped, 446 deselected; nothing was downloaded |
+| `python -m pytest -q` | 463 passed in 259.00 s |
+| `python -m pytest -q -m "not model"` | 456 passed, 7 deselected in 20.82 s |
+| `python -m pytest -q --ignore=tests/test_embeddings.py --ignore=tests/test_semantic_search.py` (the Day 1-2 suite) | 162 passed in 12.97 s, unchanged |
+| `python -m pytest -q tests/test_embeddings.py` (Day 3) | 108 passed in 259.49 s, unchanged |
+| `python -m pytest -q tests/test_semantic_search.py` (Day 4) | 193 passed in 179.94 s |
+| `HF_HOME=<empty folder> python -m pytest -q -m model` (model not cached) | 7 skipped, 456 deselected; nothing was downloaded |
 
 Before Day 4, the suite was 270 tests, and all of them still pass.
 
@@ -668,7 +717,7 @@ The tests need **no API key and no network**:
 - The semantic-search tests use fake encoders that return fixed vectors, so
   every expected ranking and score can be worked out by hand. The metric
   tests use hand-calculated examples.
-- The 6 tests marked `model` (3 for Day 3, 3 for Day 4) load the real
+- The 7 tests marked `model` (3 for Day 3, 4 for Day 4) load the real
   `all-MiniLM-L6-v2` with `local_files_only=True` while sockets are blocked.
   If the model is not cached, they are skipped. They never download it.
 
@@ -680,7 +729,7 @@ The tests need **no API key and no network**:
 | `test_response_parser.py` | JSON parsing (valid, fenced, empty, malformed, NaN) and schema validation (missing/extra fields, wrong types and ranges) |
 | `test_main.py` | CLI output and exit codes, and that keys never appear in output |
 | `test_embeddings.py` | cosine similarity: known values, symmetry, scale invariance, clipping to [-1, 1], extreme magnitudes (1e-200 to 1e200), invalid vectors; the similarity matrix, including extreme magnitudes; pair ranking, ties and `top_k`; `top_k` validation (0, -1, 2.5, booleans) in `rank_pairs()` and `format_report()`; embedding shape for 1 to 768 dimensions; invalid texts and unusable model output; loading from the cache first and downloading only when allowed; CLI output and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, and the expected ranking of the five example texts |
-| `test_semantic_search.py` | the dataset (20 documents, unique IDs, six subjects; every label points at a real document); malformed documents and JSON entries, duplicate document and query IDs, repeated JSON keys; ranking order, top 3 and `top_k` larger than the collection; invalid queries and `top_k` (0, -1, 2.5, booleans, strings, `None`) rejected before the model is called; ties broken by ID whatever the document order; document embeddings computed once, reused and read-only; Day 3 numerical behaviour (1e-200 to 1e200, clipping to [-1, 1], zero vectors); keyword tokenising, IDF scores and ties; top-3 hit rate and Recall@3 against hand-calculated examples; empty and invalid labels; CLI output, `--method keyword`, `--offline`, `--top-k` and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, 3 results best first, and every labelled query evaluated |
+| `test_semantic_search.py` | the dataset (20 documents, unique IDs, six subjects; every label points at a real document); malformed documents and JSON entries, duplicate document and query IDs, repeated JSON keys; ranking order, top 3 and `top_k` larger than the collection; invalid queries and `top_k` (0, -1, 2.5, booleans, strings, `None`) rejected before the model is called; ties broken by ID whatever the document order; document embeddings computed once, reused and read-only; Day 3 numerical behaviour (1e-200 to 1e200, clipping to [-1, 1], zero vectors); keyword tokenising, IDF scores and ties; top-3 hit rate, Recall@3, Precision@3 (with empty slots counted as misses) and MRR@3 against hand-calculated examples; empty and invalid labels; CLI output, `--method keyword`, `--offline`, `--top-k` and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, 3 results best first, every labelled query evaluated, and the measured results (no miss, `q10` the only query whose relevant document is not first, Recall@3 1.000, Precision@3 27/69, MRR@3 0.971) |
 
 ## Design notes
 
@@ -752,5 +801,5 @@ The tests need **no API key and no network**:
 | `Error: could not load sentence-transformers/all-MiniLM-L6-v2` | The model is not cached (or `--offline` was used) and could not be downloaded. Connect once and run `python -m src.embeddings`. |
 | `OSError: [WinError 4551]` when importing torch | Windows Smart App Control blocks PyTorch's DLLs under Windows Python. Run under WSL2 Ubuntu. |
 | `pip install` starts downloading `nvidia-*` packages | PyTorch is coming from PyPI with CUDA. Stop it and install the CPU build first (see [Setup](#setup)). |
-| `6 skipped` for tests marked `model` | The embedding model is not in the local cache. Run `python -m src.embeddings` once. |
+| `7 skipped` for tests marked `model` | The embedding model is not in the local cache. Run `python -m src.embeddings` once. |
 | `Error: could not load .../data/documents.json: ...` | The dataset file is missing or invalid. The message names the entry and the problem, for example a duplicate ID or a missing field. |

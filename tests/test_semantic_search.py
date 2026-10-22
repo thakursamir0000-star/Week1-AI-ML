@@ -5,7 +5,7 @@ with hand-worked values. Semantic search uses fake encoders that return fixed
 vectors, so none of those tests imports PyTorch or touches a model. Tests
 marked ``model`` use the real all-MiniLM-L6-v2 from the local Hugging Face
 cache only (network blocked), are skipped when it is not cached, and check
-that the pipeline works, not how accurate it is.
+that the pipeline works and still gives the results reported in the README.
 
 Run everything except the real-model tests with:  python -m pytest -m "not model"
 """
@@ -38,14 +38,17 @@ from src.semantic_search import (
     check_queries,
     evaluate,
     evaluate_rankings,
+    format_evaluation,
     hit_at_k,
     load_documents,
     load_queries,
     main,
     parse_documents,
     parse_queries,
+    precision_at_k,
     rank_by_score,
     recall_at_k,
+    reciprocal_rank,
     tokenize,
 )
 
@@ -507,6 +510,10 @@ def test_keyword_baseline_evaluation_worked_by_hand():
     assert report.hits == 3
     assert report.hit_rate == pytest.approx(3 / 4)
     assert report.mean_recall == pytest.approx((1 + 1 + 2 / 3 + 0) / 4)  # 0.667, below the hit rate
+    # The divisor is always 3, so the empty slots of the short result lists count as misses.
+    assert [result.precision for result in report.results] == pytest.approx([1 / 3, 2 / 3, 2 / 3, 0.0])
+    assert report.mean_precision == pytest.approx(5 / 12)
+    assert report.mrr == pytest.approx(3 / 4)
 
 
 def test_semantic_and_keyword_are_scored_on_the_same_queries_and_labels():
@@ -526,11 +533,13 @@ def test_semantic_and_keyword_are_scored_on_the_same_queries_and_labels():
 # --- Metrics (pure), worked by hand ---------------------------------------------------------
 
 # Four queries, top 3:
-#   m1  relevant {a}           retrieved [a, b, c]  -> hit, recall 1/1 = 1
-#   m2  relevant {b, d}        retrieved [a, d, c]  -> hit, recall 1/2 = 0.5
-#   m3  relevant {e}           retrieved [a, b, c]  -> miss, recall 0/1 = 0
-#   m4  relevant {a, b, c, d}  retrieved [a, b, e]  -> hit, recall 2/4 = 0.5
+#   m1  relevant {a}           retrieved [a, b, c]  -> hit, recall 1/1 = 1,   precision 1/3, first relevant 1st
+#   m2  relevant {b, d}        retrieved [a, d, c]  -> hit, recall 1/2 = 0.5, precision 1/3, first relevant 2nd
+#   m3  relevant {e}           retrieved [a, b, c]  -> miss, recall 0/1 = 0,  precision 0/3, none
+#   m4  relevant {a, b, c, d}  retrieved [a, b, e]  -> hit, recall 2/4 = 0.5, precision 2/3, first relevant 1st
 # Top-3 hit rate = 3/4 = 0.75.  Recall@3 = (1 + 0.5 + 0 + 0.5) / 4 = 0.5.
+# Precision@3 = (1/3 + 1/3 + 0 + 2/3) / 4 = 1/3; at best (1 + 2 + 1 + 3) / 12 = 7/12.
+# MRR@3 = (1 + 1/2 + 0 + 1) / 4 = 0.625.
 WORKED_QUERIES = [
     LabelledQuery("m1", "first", ["a"]),
     LabelledQuery("m2", "second", ["b", "d"]),
@@ -548,6 +557,43 @@ def test_hit_rate_and_recall_worked_by_hand():
     assert report.hit_rate == 0.75
     assert report.mean_recall == 0.5
     assert report.top_k == 3
+
+
+def test_precision_and_mrr_worked_by_hand():
+    report = evaluate_rankings(WORKED_QUERIES, WORKED_RANKINGS)
+    assert [result.precision for result in report.results] == pytest.approx([1 / 3, 1 / 3, 0.0, 2 / 3])
+    assert [result.reciprocal_rank for result in report.results] == [1.0, 0.5, 0.0, 1.0]
+    assert report.mean_precision == pytest.approx(1 / 3)
+    assert report.max_mean_precision == pytest.approx(7 / 12)
+    assert report.mrr == 0.625
+
+
+@pytest.mark.parametrize(
+    ("relevant", "retrieved", "top_k", "precision", "rank_score"),
+    [
+        (["a"], ["a", "b", "c"], 3, 1 / 3, 1.0),  # one relevant document: 1/3 is the most Precision@3 can be
+        (["c"], ["a", "b", "c"], 3, 1 / 3, 1 / 3),  # rank 3
+        (["b", "c"], ["a", "b", "c"], 3, 2 / 3, 1 / 2),  # only the first relevant document sets the reciprocal rank
+        (["d"], ["a", "b", "c", "d"], 3, 0.0, 0.0),  # rank 4 does not count in the top 3...
+        (["d"], ["a", "b", "c", "d"], 4, 1 / 4, 1 / 4),  # ...but does in the top 4
+        (["a", "b"], ["a"], 3, 1 / 3, 1.0),  # fewer results than top_k: the empty slots count as misses
+        (["a"], [], 3, 0.0, 0.0),  # no results at all
+        (["a", "b", "c", "d"], ["a", "b", "c"], 3, 1.0, 1.0),
+    ],
+)
+def test_precision_at_k_and_reciprocal_rank(relevant, retrieved, top_k, precision, rank_score):
+    assert precision_at_k(relevant, retrieved, top_k) == precision
+    assert reciprocal_rank(relevant, retrieved, top_k) == rank_score
+
+
+def test_evaluation_output_shows_precision_and_the_first_relevant_rank_of_each_query():
+    out = format_evaluation({"semantic": evaluate_rankings(WORKED_QUERIES, WORKED_RANKINGS)}, document_count=5)
+    assert "  m2  hit   recall@3 1/2  precision@3 1/3  first relevant: 2  relevant: b, d " in out
+    assert "  m3  MISS  recall@3 0/1  precision@3 0/3  first relevant: -  relevant: e " in out
+    assert "  Precision@3:    0.333 (best possible on these labels: 0.583)\n" in out
+    assert "  MRR@3:          0.625\n" in out
+    assert "  Method    Top-3 hit rate     Recall@3  Precision@3  MRR@3\n" in out
+    assert "  semantic  75.0% (3/4)        0.500     0.333        0.625\n" in out
 
 
 @pytest.mark.parametrize(
@@ -692,7 +738,7 @@ def test_evaluate_passes_top_k_to_the_searcher():
     ],
 )
 def test_metrics_reject_invalid_input(relevant, retrieved, message):
-    for metric in (hit_at_k, recall_at_k):
+    for metric in (hit_at_k, recall_at_k, precision_at_k, reciprocal_rank):
         with pytest.raises(ValueError, match=message):
             metric(relevant, retrieved)
 
@@ -703,6 +749,8 @@ def test_metrics_and_evaluation_reject_invalid_top_k(top_k):
     for call in (
         lambda: hit_at_k(["a"], ["a"], top_k),
         lambda: recall_at_k(["a"], ["a"], top_k),
+        lambda: precision_at_k(["a"], ["a"], top_k),
+        lambda: reciprocal_rank(["a"], ["a"], top_k),
         lambda: evaluate_rankings(WORKED_QUERIES, WORKED_RANKINGS, top_k),
         lambda: evaluate(KeywordSearcher(ANIMALS), [LabelledQuery("q1", "cats", ["a"])], top_k),
     ):
@@ -808,17 +856,24 @@ def test_evaluate_command_prints_both_methods_and_the_metric_definitions(fake_mo
     for name, report in (("semantic", semantic), ("keyword", keyword)):
         assert f"  Top-3 hit rate: {report.hits} of 23 queries = {report.hit_rate:.1%}\n" in out
         assert f"  Recall@3:       {report.mean_recall:.3f}\n" in out
+        assert f"  Precision@3:    {report.mean_precision:.3f} (best possible on these labels: 0.391)\n" in out
+        assert f"  MRR@3:          {report.mrr:.3f}\n" in out
         summary = f"{report.hit_rate:.1%} ({report.hits}/23)"
-        assert f"  {name:<9} {summary:<18} {report.mean_recall:.3f}\n" in out
+        assert (
+            f"  {name:<9} {summary:<18} {report.mean_recall:<9.3f} {report.mean_precision:<12.3f} {report.mrr:.3f}\n"
+            in out
+        )
     assert "Top-3 hit rate: the share of queries with at least one relevant document in the top 3." in out
     assert "Recall@3: for each query, (relevant documents in the top 3) / (all of its relevant documents)," in out
+    assert "Precision@3: for each query, (relevant documents in the top 3) / 3, averaged over the queries." in out
+    assert "MRR@3: for each query, 1 / (rank of the first relevant document in the top 3), or 0 if there is none," in out
     assert fake_model_loads == [{"local_files_only": False}]
 
 
 def test_evaluate_command_top_k_renames_the_metrics(fake_model_loads, capsys):
     assert main(["evaluate", "--top-k", "5"]) == 0
     out = capsys.readouterr().out
-    assert "Top-5 hit rate" in out and "Recall@5" in out
+    assert "Top-5 hit rate" in out and "Recall@5" in out and "Precision@5" in out and "MRR@5" in out
     assert "Top-3" not in out
 
 
@@ -917,8 +972,27 @@ def test_real_model_search_returns_three_documents_best_first(real_searcher):
 
 @pytest.mark.model
 def test_real_model_evaluation_covers_every_labelled_query(real_searcher):
-    # Checks the pipeline, not the accuracy: the measured numbers are reported in the README.
+    # Checks the pipeline; the regression test below pins the measured numbers.
     report = evaluate(real_searcher, load_queries(real_searcher.documents))
     assert len(report.results) == 23
     assert all(len(result.retrieved_ids) == 3 for result in report.results)
     assert 0.0 <= report.mean_recall <= report.hit_rate <= 1.0
+
+
+@pytest.mark.model
+def test_real_model_still_gives_the_results_reported_in_the_readme(real_searcher):
+    # A regression test, not a benchmark: a change to the model, the documents or the ranking code that loses a
+    # hit or moves a relevant document down fails here. Fix the cause, or re-measure and update the README;
+    # never edit the relevance labels to make this pass.
+    report = evaluate(real_searcher, load_queries(real_searcher.documents))
+    assert [result.query.id for result in report.results if not result.hit] == []
+    # q10 is the only query whose first relevant document is not ranked first. Its db-03 is third, about 0.02
+    # above the fourth document, so it is the hit most likely to be lost.
+    not_first = {
+        result.query.id: round(1 / result.reciprocal_rank) for result in report.results if result.reciprocal_rank < 1
+    }
+    assert not_first == {"q10": 3}
+    assert report.mean_recall == 1.0
+    assert report.mean_precision == pytest.approx(27 / 69)  # every one of the 27 labels is in its query's top 3
+    assert report.mean_precision == pytest.approx(report.max_mean_precision)
+    assert report.mrr == pytest.approx((22 + 1 / 3) / 23)

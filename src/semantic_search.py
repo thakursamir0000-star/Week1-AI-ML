@@ -6,7 +6,8 @@ The module has four parts, kept apart so that most of it is tested without a mod
   the documents and the labelled queries live in ``data/documents.json`` and
   ``data/queries.json`` and are validated when they are loaded.
 - **Pure ranking and evaluation** (``rank_by_score``, ``hit_at_k``,
-  ``recall_at_k``, ``evaluate_rankings``): plain Python and NumPy, no model.
+  ``recall_at_k``, ``precision_at_k``, ``reciprocal_rank``,
+  ``evaluate_rankings``): plain Python and NumPy, no model.
 - **Searchers**: ``SemanticSearcher`` embeds the documents once with the Day 3
   ``embed_texts()`` and scores each query with ``cosine_similarity()``.
   ``KeywordSearcher`` is the baseline: IDF-weighted word overlap, no model.
@@ -356,19 +357,52 @@ def recall_at_k(relevant_ids: Sequence[str], retrieved_ids: Sequence[str], top_k
     return len(relevant & top) / len(relevant)
 
 
+def precision_at_k(relevant_ids: Sequence[str], retrieved_ids: Sequence[str], top_k: int = DEFAULT_TOP_K) -> float:
+    """Precision@k = (relevant documents among the first ``top_k`` retrieved) / ``top_k``.
+
+    The result is from 0 to 1. The divisor is always ``top_k``, so a slot left
+    empty (the keyword baseline can return fewer than ``top_k`` documents)
+    counts as a miss. A query with fewer relevant documents than ``top_k``
+    cannot reach 1: with one relevant document, Precision@3 is at most 1/3.
+
+    Raises:
+        ValueError: as for ``hit_at_k()``.
+    """
+    relevant, top = _relevant_and_top(relevant_ids, retrieved_ids, top_k)
+    return len(relevant & top) / top_k
+
+
+def reciprocal_rank(relevant_ids: Sequence[str], retrieved_ids: Sequence[str], top_k: int = DEFAULT_TOP_K) -> float:
+    """1 / (rank of the first relevant document among the first ``top_k`` retrieved), or 0 if there is none.
+
+    Averaged over the queries, this is MRR@k: 1 if every query has a relevant
+    document in first place, 1/3 if it is always third.
+
+    Raises:
+        ValueError: as for ``hit_at_k()``.
+    """
+    relevant, _ = _relevant_and_top(relevant_ids, retrieved_ids, top_k)
+    for rank, document_id in enumerate(retrieved_ids[:top_k], start=1):
+        if document_id in relevant:
+            return 1 / rank
+    return 0.0
+
+
 @dataclass(frozen=True)
 class QueryEvaluation:
-    """One labelled query: its first ``top_k`` retrieved IDs, whether any is relevant, and its Recall@k."""
+    """One labelled query: its first ``top_k`` retrieved IDs, whether any is relevant, and its per-query metrics."""
 
     query: LabelledQuery
     retrieved_ids: tuple[str, ...]
     hit: bool
     recall: float
+    precision: float
+    reciprocal_rank: float
 
 
 @dataclass(frozen=True)
 class EvaluationReport:
-    """The result for every labelled query, and the two averages over all of them."""
+    """The result for every labelled query, and the averages over all of them."""
 
     top_k: int
     results: tuple[QueryEvaluation, ...]
@@ -387,6 +421,22 @@ class EvaluationReport:
     def mean_recall(self) -> float:
         """Recall@k: the per-query Recall@k averaged over the queries, from 0 to 1."""
         return math.fsum(result.recall for result in self.results) / len(self.results)
+
+    @property
+    def mean_precision(self) -> float:
+        """Precision@k: the per-query Precision@k averaged over the queries, from 0 to 1."""
+        return math.fsum(result.precision for result in self.results) / len(self.results)
+
+    @property
+    def max_mean_precision(self) -> float:
+        """The highest Precision@k these labels allow: a perfect ranking scores min(relevant, k) / k per query."""
+        best = sum(min(len(result.query.relevant_ids), self.top_k) for result in self.results)
+        return best / (self.top_k * len(self.results))
+
+    @property
+    def mrr(self) -> float:
+        """MRR@k: the per-query reciprocal rank averaged over the queries, from 0 to 1."""
+        return math.fsum(result.reciprocal_rank for result in self.results) / len(self.results)
 
 
 def evaluate_rankings(
@@ -409,9 +459,11 @@ def evaluate_rankings(
         try:
             hit = hit_at_k(query.relevant_ids, retrieved_ids, top_k)
             recall = recall_at_k(query.relevant_ids, retrieved_ids, top_k)
+            precision = precision_at_k(query.relevant_ids, retrieved_ids, top_k)
+            rank_score = reciprocal_rank(query.relevant_ids, retrieved_ids, top_k)
         except ValueError as exc:
             raise ValueError(f"Query {query.id!r}: {exc}") from None
-        results.append(QueryEvaluation(query, tuple(retrieved_ids[:top_k]), hit, recall))
+        results.append(QueryEvaluation(query, tuple(retrieved_ids[:top_k]), hit, recall, precision, rank_score))
     return EvaluationReport(top_k, tuple(results))
 
 
@@ -600,13 +652,16 @@ def _format_query_results(report: EvaluationReport) -> list[str]:
     relevant_lists = [", ".join(result.query.relevant_ids) for result in report.results]
     relevant_width = max(len(text) for text in relevant_lists)
     id_width = max(len(result.query.id) for result in report.results)
+    k = report.top_k
     lines = []
     for result, relevant in zip(report.results, relevant_lists):
         found = len(set(result.query.relevant_ids) & set(result.retrieved_ids))
         outcome = "hit " if result.hit else "MISS"
+        first = str(round(1 / result.reciprocal_rank)) if result.reciprocal_rank else "-"
         retrieved = ", ".join(result.retrieved_ids) or "(none)"
         lines.append(
-            f"  {result.query.id:<{id_width}}  {outcome}  recall@{report.top_k} {found}/{len(result.query.relevant_ids)}"
+            f"  {result.query.id:<{id_width}}  {outcome}  recall@{k} {found}/{len(result.query.relevant_ids)}"
+            f"  precision@{k} {found}/{k}  first relevant: {first:<{len(str(k))}}"
             f"  relevant: {relevant:<{relevant_width}}  retrieved: {retrieved}"
         )
         lines.append(f"  {'':<{id_width}}  {result.query.text}")
@@ -629,18 +684,29 @@ def format_evaluation(reports: Mapping[str, EvaluationReport], document_count: i
         lines += [
             f"  Top-{k} hit rate: {report.hits} of {query_count} queries = {report.hit_rate:.1%}",
             f"  Recall@{k}:       {report.mean_recall:.3f}",
+            f"  Precision@{k}:    {report.mean_precision:.3f} (best possible on these labels: {report.max_mean_precision:.3f})",
+            f"  MRR@{k}:          {report.mrr:.3f}",
             "",
         ]
     hit_heading = f"Top-{k} hit rate"
-    lines += [f"Summary ({query_count} queries)", f"  {'Method':<9} {hit_heading:<18} Recall@{k}"]
+    lines += [
+        f"Summary ({query_count} queries)",
+        f"  {'Method':<9} {hit_heading:<18} {f'Recall@{k}':<9} {f'Precision@{k}':<12} MRR@{k}",
+    ]
     for method, report in reports.items():
         hit_rate = f"{report.hit_rate:.1%} ({report.hits}/{query_count})"
-        lines.append(f"  {method:<9} {hit_rate:<18} {report.mean_recall:.3f}")
+        lines.append(
+            f"  {method:<9} {hit_rate:<18} {report.mean_recall:<9.3f} {report.mean_precision:<12.3f} {report.mrr:.3f}"
+        )
     lines += [
         "",
         f"Top-{k} hit rate: the share of queries with at least one relevant document in the top {k}.",
         f"Recall@{k}: for each query, (relevant documents in the top {k}) / (all of its relevant documents),",
         "  averaged over the queries. The two are equal for a query with exactly one relevant document.",
+        f"Precision@{k}: for each query, (relevant documents in the top {k}) / {k}, averaged over the queries.",
+        f"  A query with fewer than {k} relevant documents cannot reach 1; an empty slot counts as a miss.",
+        f"MRR@{k}: for each query, 1 / (rank of the first relevant document in the top {k}), or 0 if there is none,",
+        "  averaged over the queries.",
     ]
     return "\n".join(lines)
 
