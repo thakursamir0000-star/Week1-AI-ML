@@ -23,7 +23,7 @@ Groq is the provider used for live API testing.
 | Day 2 (Tue) | JSON parsing, response validation, classification and offline testing | Done |
 | Day 3 (Wed) | Embeddings | Done. Five example texts compared with a local embedding model, and all tests pass (2026-10-22). This is a demonstration, not an evaluation: see [the similarity experiment](#similarity-experiment-day-3). |
 | Day 4 (Thu) | Semantic search | Done. Search over 20 documents, evaluated on 23 labelled queries against a keyword baseline, and all tests pass (2026-10-22). The set is small and easy, so the scores are not a general accuracy figure: see [the search evaluation](#search-evaluation-day-4). |
-| Day 5 (Fri) | Review | Not yet completed |
+| Day 5 (Fri) | Review | In progress. Done: an AI-assisted code review of Days 1-4, and the accuracy and cost note in `docs/day5_accuracy_cost.md`. The two confirmed review findings are fixed (`check-env` now checks the Day 3-4 packages, and the tie discussion covers `q09` and `q16`), with 6 new tests, and all 469 tests pass (2026-10-25). Pending: peer review by a human mentor, not yet confirmed. |
 
 ### Day 1: environment setup and API integration
 
@@ -130,7 +130,7 @@ Week1-AI-ML/
 ├── data/
 │   ├── documents.json      # Day 4: the 20 documents (id, text)
 │   └── queries.json        # Day 4: the 23 labelled queries (id, text, relevant_ids)
-├── tests/                  # 463 offline tests (no keys, no network; 7 load the cached embedding model)
+├── tests/                  # 469 offline tests (no keys, no network; 7 load the cached embedding model)
 ├── .env.example            # configuration template (placeholders only)
 ├── requirements.txt
 └── pytest.ini              # also registers the `model` test marker
@@ -525,7 +525,8 @@ retrieved documents. Q is the set of 23 queries.
   were not tuned on the queries.
 
 **Ties.** Equal scores are ordered by document ID in both methods. This is
-deterministic, but arbitrary. It decided one keyword result (`q16`, below).
+deterministic, but arbitrary. In the keyword top 3 it decided two queries,
+both described below: the hit for `q09` and the miss for `q16`.
 
 ### Results
 
@@ -568,6 +569,12 @@ Precision@1 and MRR@1 equal the top-1 hit rate:
     ("keep" or "password"). ID order put `sec-03`, the relevant document,
     fourth. So the tie-breaking rule decided this miss.
   - `q19` ("eggs in one basket"): no shared word, no results.
+- **Keyword hit decided by a tie.** `q09` ("make finding one row in a huge
+  table much faster"): `db-01` is first (5.991, sharing "row" and
+  "table"). Then `db-02`, `fin-01` and `ml-04` tie at 2.996 for the last
+  two places, each sharing one word ("much", "faster" or "huge"). ID order
+  kept `db-02`, the relevant document, in second place. So the
+  tie-breaking rule decided this hit.
 - **Keyword partial recall.** For `q21`, only `sec-02` contains the word
   "attack" (1 of 3). For `q23`, it found `fin-01` but not `fin-02` (1 of 2).
 - **Semantic near-misses.**
@@ -679,13 +686,27 @@ The base classes are `GroqClientError`, `ClaudeClientError` and
 ## Tests
 
 ```bash
-python -m pytest -q                  # all 463 tests, about 10-20 seconds (7 load the cached embedding model)
-python -m pytest -q -m "not model"   # 456 tests, about 3 seconds, never imports PyTorch in the test process
+python -m pytest -q                  # all 469 tests, about 10-20 seconds (7 load the cached embedding model)
+python -m pytest -q -m "not model"   # 462 tests, about 3 seconds, never imports PyTorch in the test process
 ```
 
-Results recorded on 2026-10-23, after Precision@3, MRR@3 and the
+Results recorded on 2026-10-25, after Day 5 added 6 `check-env` tests to
+`tests/test_main.py` (WSL2 Ubuntu, Python 3.12.15, pytest 9.1.1). The
+virtual environment was on the Linux file system and the repository on
+`/mnt/d`:
+
+| Command | Result |
+|---------|--------|
+| `python -m pytest -q` | 469 passed in 16.14 s |
+| `python -m pytest -q -m "not model"` | 462 passed, 7 deselected in 3.28 s |
+| `python -m pytest -q --ignore=tests/test_embeddings.py --ignore=tests/test_semantic_search.py` (the Day 1-2 suite) | 168 passed in 1.83 s: the 162 earlier tests and the 6 new `check-env` tests |
+| `python -m pytest -q tests/test_embeddings.py` (Day 3) | 108 passed in 6.85 s, unchanged |
+| `python -m pytest -q tests/test_semantic_search.py` (Day 4) | 193 passed in 7.82 s, unchanged |
+| `HF_HOME=<empty folder> python -m pytest -q -m model` (model not cached) | 7 skipped, 462 deselected; nothing was downloaded |
+
+Earlier results, recorded on 2026-10-23 after Precision@3, MRR@3 and the
 real-model regression test were added (WSL2 Ubuntu, Python 3.12.15,
-pytest 9.1.1). This run used a virtual environment on the Windows drive
+pytest 9.1.1). That run used a virtual environment on the Windows drive
 (`/mnt/d`), where importing PyTorch is much slower, so the times are longer
 than on 2026-10-22 (16.82 s for the full suite then):
 
@@ -698,7 +719,8 @@ than on 2026-10-22 (16.82 s for the full suite then):
 | `python -m pytest -q tests/test_semantic_search.py` (Day 4) | 193 passed in 179.94 s |
 | `HF_HOME=<empty folder> python -m pytest -q -m model` (model not cached) | 7 skipped, 456 deselected; nothing was downloaded |
 
-Before Day 4, the suite was 270 tests, and all of them still pass.
+Before Day 4, the suite was 270 tests. Day 4 brought it to 463, and Day 5 to
+469 (the 6 `check-env` tests in `tests/test_main.py`). All of them still pass.
 
 Passing tests show that the code behaves as specified. They do not show that
 the model is accurate. The measured retrieval quality is under
@@ -727,7 +749,7 @@ The tests need **no API key and no network**:
 | `test_api_client.py` | Anthropic config, request shape (effort, fallback beta header, no unsupported parameters), text extraction, HTTP 401/403/429/400/404/500/529 and network errors |
 | `test_classifier.py` | Anthropic classification workflow end to end |
 | `test_response_parser.py` | JSON parsing (valid, fenced, empty, malformed, NaN) and schema validation (missing/extra fields, wrong types and ranges) |
-| `test_main.py` | CLI output and exit codes, and that keys never appear in output |
+| `test_main.py` | CLI output and exit codes; `check-env` package checks (numpy, sentence-transformers and torch are required and each missing one is named and fails the check; pytest is optional); and that keys never appear in output |
 | `test_embeddings.py` | cosine similarity: known values, symmetry, scale invariance, clipping to [-1, 1], extreme magnitudes (1e-200 to 1e200), invalid vectors; the similarity matrix, including extreme magnitudes; pair ranking, ties and `top_k`; `top_k` validation (0, -1, 2.5, booleans) in `rank_pairs()` and `format_report()`; embedding shape for 1 to 768 dimensions; invalid texts and unusable model output; loading from the cache first and downloading only when allowed; CLI output and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, and the expected ranking of the five example texts |
 | `test_semantic_search.py` | the dataset (20 documents, unique IDs, six subjects; every label points at a real document); malformed documents and JSON entries, duplicate document and query IDs, repeated JSON keys; ranking order, top 3 and `top_k` larger than the collection; invalid queries and `top_k` (0, -1, 2.5, booleans, strings, `None`) rejected before the model is called; ties broken by ID whatever the document order; document embeddings computed once, reused and read-only; Day 3 numerical behaviour (1e-200 to 1e200, clipping to [-1, 1], zero vectors); keyword tokenising, IDF scores and ties; top-3 hit rate, Recall@3, Precision@3 (with empty slots counted as misses) and MRR@3 against hand-calculated examples; empty and invalid labels; CLI output, `--method keyword`, `--offline`, `--top-k` and exit codes; that importing the module does not load PyTorch. With the cached model: 384 dimensions, 3 results best first, every labelled query evaluated, and the measured results (no miss, `q10` the only query whose relevant document is not first, Recall@3 1.000, Precision@3 27/69, MRR@3 0.971) |
 

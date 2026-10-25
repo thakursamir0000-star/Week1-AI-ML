@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from importlib import metadata
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,6 +120,58 @@ def test_check_env_hides_configured_key(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "configured (value hidden)" in out
     assert FAKE_API_KEY not in out
+
+
+@pytest.fixture
+def fake_packages(monkeypatch):
+    """Make check-env see every package as installed (version 9.9.9) except the ones passed to the returned function."""
+
+    def install(*missing: str) -> None:
+        def version(package: str) -> str:
+            if package in missing:
+                raise metadata.PackageNotFoundError(package)
+            return "9.9.9"
+
+        fake = SimpleNamespace(version=version, PackageNotFoundError=metadata.PackageNotFoundError)
+        monkeypatch.setattr(cli, "metadata", fake)
+
+    return install
+
+
+def test_check_env_lists_the_day3_and_day4_packages(fake_packages, capsys):
+    fake_packages()
+
+    exit_code = cli.main(["check-env"])
+
+    out = capsys.readouterr().out
+    assert exit_code == cli.EXIT_OK
+    for package in ("numpy", "sentence-transformers", "torch"):
+        assert f"{package:<18}: 9.9.9\n" in out
+    assert "Missing required" not in out
+
+
+@pytest.mark.parametrize("missing", [("numpy",), ("sentence-transformers",), ("torch",), ("numpy", "torch")])
+def test_check_env_fails_and_names_missing_day3_and_day4_packages(fake_packages, capsys, missing):
+    fake_packages(*missing)
+
+    exit_code = cli.main(["check-env"])
+
+    out = capsys.readouterr().out
+    assert exit_code == cli.EXIT_FAILURE
+    for package in missing:
+        assert f"{package:<18}: NOT INSTALLED\n" in out
+    assert f"  ! Missing required package(s): {', '.join(missing)}. See README.md, section 'Setup'.\n" in out
+
+
+def test_check_env_does_not_require_pytest(fake_packages, capsys):
+    fake_packages("pytest")
+
+    exit_code = cli.main(["check-env"])
+
+    out = capsys.readouterr().out
+    assert exit_code == cli.EXIT_OK
+    assert "pytest            : NOT INSTALLED\n" in out
+    assert "Missing required" not in out
 
 
 # --- optional Groq provider --------------------------------------------------

@@ -41,7 +41,10 @@ EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_CONFIG = 2
 
-REQUIRED_PACKAGES = ("anthropic", "httpx2", "python-dotenv", "openai", "httpx")
+API_PACKAGES = ("anthropic", "httpx2", "python-dotenv", "openai", "httpx")  # Days 1-2
+# Days 3-4. check-env reads package metadata only, so it never imports PyTorch.
+EMBEDDING_PACKAGES = ("numpy", "sentence-transformers", "torch")
+REQUIRED_PACKAGES = API_PACKAGES + EMBEDDING_PACKAGES
 TEST_PACKAGES = ("pytest",)
 DEFAULT_PING_PROMPT = "Reply with one short sentence confirming that this API test call worked."
 
@@ -54,13 +57,18 @@ def cmd_check_env(args: argparse.Namespace) -> int:
         print("  ! anthropic 1.x requires Python 3.10 or newer")
         ok = False
 
+    missing = []
     for package in REQUIRED_PACKAGES + TEST_PACKAGES:
         try:
             version = metadata.version(package)
         except metadata.PackageNotFoundError:
             version = "NOT INSTALLED"
-            ok = ok and package not in REQUIRED_PACKAGES
+            if package in REQUIRED_PACKAGES:
+                missing.append(package)
         print(f"{package:<18}: {version}")
+    if missing:
+        print(f"  ! Missing required package(s): {', '.join(missing)}. See README.md, section 'Setup'.")
+        ok = False
 
     try:
         settings = load_settings()
